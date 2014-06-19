@@ -1,0 +1,175 @@
+# Project Assignment - Practical Machine Learning JHU - June 2014
+(By Jaime Abril, 2014)
+```{r setup}
+library(caret)
+library(randomForest)
+set.seed(1991)
+````
+## The Problem
+We want to predict the manner in which a number of participants have performed a set of workouts using data from several wearable sensors.
+
+The data set comes from the research case:  http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+The data was generated from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways.
+
+## The Data
+The training data for this project are available here: 
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The testing data are available here: 
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+### IMPORTANT NOTE:
+In this write-up we will use the following data sets to train and test the predicition models:
+
+* **train** : sample of 70% of the observations contained in the original training data set. This data set will be used to train the models.  
+* **test** : sample of remaining 30% of the observations contained in the original training data set. This data set will be used to test the models and estimate the out-of-sample error via cross-validation.  
+* **testing** : original testing data set, containing 20 observations, which do not include  the variable to predict ("classe") and shall be used to submit the predictions in the Course Project Submission part. 
+
+### Building the data sets
+We remove the first column of both sets as it is only an enumeration of samples and doesn't add any information per-se.
+```{r Read data}
+training<-read.csv("http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv")
+testing<-read.csv("http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv")
+training<-training[,-1]
+testing<-testing[,-1]
+```
+
+The training data shall be used to train & test the model, hence 
+we will split the data into two sets, allocating 70% of the observations to **train data** and the remaining 30% to **test data**: 
+```{r Create train and test partitions}
+inTrain<-createDataPartition(training$classe,p=0.7,list=FALSE)
+train<-training[inTrain,]
+test<-training[-inTrain,]
+```
+
+## Feature selection
+A quick investigation of the original training & testing data sets using head() and summary() functions reveals the following:  
+
+1. All variables in the training data set which start with max, min, amplitude, avg, var, stddev, kurtosis and skewness have NA values for all observations where the variable *new_window*=="no", and numeric values otherwise ("yes").  
+2. The variable *classe* (prediction objective) in the training data set has the same value for all observations where the variable *num_window* has the same value.  
+3. The 20 observations included in the testing data set have all *new_window*=="no", which means all the variables mentioned in point 1. have NA values.  
+
+Points 1. & 2. above are consistent with the description of the data as described by the authors of the research in: http://groupware.les.inf.puc-rio.br/public/papers/2013.Velloso.QAR-WLE.pdf, section 5.1:  
+"For feature extraction we used a sliding window approach with different lengths from 0.5 second to 2.5 seconds, with 0.5 second overlap. In each step of the sliding window approach we calculated features on the Euler angles (roll, pitch
+and yaw), as well as the raw accelerometer, gyroscope and magnetometer readings. For the Euler angles of each of the four sensors we calculated eight features: mean, variance, standard deviation, max, min, amplitude, kurtosis and skewness,
+generating in total 96 derived feature sets."
+
+From the above investigation we conclude:  
+
+1. Although in the original research the statistical derived features were used as predictors in our particular assignment we cannot use them as their values in all 20 observations in the testing data set are NA values --> we can ignore these features from the data sets.  
+2. Given point 2. above, if the 20 observations in the testing data set are a sample of the collected research data, then the 100% accuracy predictor for variable *classe* will be the variable *num_window* --> we can predict the variable *classe* with 100% accuracy building a map between *num_window* and *classe* out of the testing data.  
+
+From the conclusion 1. above we can simplify the data sets removing the features we don't need. We can do this using the grep function as follows:  
+```{r Create reduced train and test data sets}
+trainred<-train[,-c(grep("^max|^min|^amplitude|^avg|^var|^stddev|^kurtosis|^skewness",colnames(train)))]
+testred<-test[,-c(grep("^max|^min|^amplitude|^avg|^var|^stddev|^kurtosis|^skewness",colnames(test)))]
+testingred<-testing[,-c(grep("^max|^min|^amplitude|^avg|^var|^stddev|^kurtosis|^skewness",colnames(testing)))]
+```
+
+We are left with `r ncol(trainred)` variables, including the variable to predict *classe*. 
+
+From the conclusion 2. above, if the underlying assumption is true, we would need only the predictor variable *num_window*. The algorithm to be used would be simply a mapping *num_window* -> *classe*.  
+
+However, if we want an algorithm able to predict the variable *classe* from brand new input data, the variables *num_window*, as well as *user_name*, *raw_timestamp_part_1*,  *raw_timestamp_part_2*, *cvtd_timestamp*, and *new_window* cannot be used as predictors.
+
+To select which predictor variables to use, out of all available variables, we have several options:  
+### Principal Component Analysis (PCA)  
+We can calculate the principal components to retain 80% of the data variance as follows:
+```{r Perform PCA analysis & processing on data sets}
+preProc<-preProcess(trainred[,-c(1,2,3,4,5,6,59)],method="pca",thresh=0.8)
+trainredPC<-predict(preProc,trainred[,-c(1,2,3,4,5,6,59)])
+testredPC<-predict(preProc,testred[,-c(1,2,3,4,5,6,59)])
+testingredPC<-predict(preProc,testingred[,-c(1,2,3,4,5,6,59)])
+preProc
+```
+
+We can use the PCs determined above as predictors. The disadvantage of using PCs as predictors is that a PC is not linked to a particular measure but a combination of measures and the predicting model loses interpretability.
+
+### Search  
+Perform a search of which subset of variables would lead to a predicting model which maximises accuracy. This search, if done exhaustively, can be highly time consuming especially when the number of variables is high, like in our case.
+
+### Correlation analysis
+Perform correlation analysis, for example, as suggested in the PhD thesis by Mark A Hall, "Correlation-based Feature Selection for Machine Learning", which is the option chosen by the authors of the research paper object of this project. Unfortunately, we don't have an R implementation of the CFS algorithm ready to be applied to our data, and we cannot use the cor() function as the variable to predict is categorical and the predictors are numeric continuous variables.
+
+### Principal Components variable relevance analysis
+Finally We could make a selection based on how relevant the variables are in the calculation of the PCs obtained from the PCA done before. This can be done by filtering out the rotation matrix elements, obtained from the PCA, which, normalised, are greater than e.g. 0.6, for the first e.g. 5 PCs (which retain the highest variance of the whole PC set):  
+```{r Select predictor variables}
+which(abs(preProc$rotation[,1:5])/max(abs(preProc$rotation))>0.6,arr.ind=T)
+```
+The above variables have a normalised weight greater than 0.6 for the PC1-5 subset.
+
+## Algorithm selection
+From the data analysis and feature selection done above, we will test 3 different algorithms:
+
+### (1) Mapping *num_window* -> *classe*  
+This algorithm should yield 100% accuracy whenever the testing data is a sample of the input data, which seems to be the case as the values of *num_window* in the testing data are a subset of the values in the training data.  
+We can build a mapping predictor variable (x) -> predicted variable (y) as follows:  
+```{r Build Mapping function}
+xyMapping<-function(x,trainx,trainy,f){
+  y<-rep(f,length(x)%/%nlevels(f))
+  for (i in 1:length(x))
+  {
+    y[i]<-trainy[which(trainx==x[i])[1]]
+  }
+  return(y)
+}
+```
+
+We use the confusionMatrix() function to estimate the out-of-sample error with cross-validation (using the test data set).  
+In this case we expect 100% accuracy prediction for the same reason mentioned above.
+```{r Calculate confusion matrix(1)}
+confusionMatrix(xyMapping(test$num_window,train$num_window,train$classe,factor(c("A","B","C","D","E"))),test$classe)
+```
+
+The prediction for the testing data is as follows:
+```{r Prediction for testing data (1)}
+p1<-xyMapping(testing$num_window,train$num_window,train$classe,factor(c("A","B","C","D","E")))
+p1
+```
+
+### (2) Random Forest using PCA preprocessed data 
+This model is a Random Forest trained using the PCs obtained from the PCA on the train data. As explained before, this model should be able to predict our variable *classe*  when applied to brand new input data.
+```{r Train model (2)}
+g2<-train(trainred$classe ~ ., method="rf",data=trainredPC)
+```
+
+We use the confusionMatrix() function to estimate the out-of-sample error with cross-validation (using the test data set).  
+In this case we expect an accuracy below 100%, but relatively high, as we have trained the model with PCs capturaing 80% of the data variance and both train and data sets are large compared to the number of features used.  
+```{r Calculate confusion matrix(2)}
+confusionMatrix(testred$classe,predict(g2,testredPC))
+```
+
+The prediction for the testing data is as follows:
+```{r Prediction for testing data (2)}
+p2<-predict(g2,testingredPC)
+p2
+```
+This prediction differs from the one using the mapping model in the sample(s) number `r which((p2==p1)==F)`
+
+### (3) Random Forest using selected variables 
+This model is a Random Forest trained using the selected variables per above PC variable relevance analysis. This model, like the model (2) should be able to predict our variable *classe*  when applied to brand new input data.
+```{r Train model (3)}
+g3<-train(classe ~ roll_belt + total_accel_belt + accel_belt_y + accel_belt_z + pitch_belt + accel_belt_x + magnet_arm_y + accel_arm_x + magnet_arm_z + magnet_forearm_z + accel_forearm_y, method="rf",data=trainred)
+```
+
+We use the confusionMatrix() function to estimate the out-of-sample error with cross-validation (using the test data set).  
+In this case we expect an accuracy below 100%, and below the model (2) one above, as we are using a more reduced number of variables than before. 
+```{r Calculate confusion matrix(3)}
+confusionMatrix(testred$classe,predict(g3,testred))
+```
+
+The prediction for the testing data is as follows:
+```{r Prediction for testing data (3)}
+p3<-predict(g3,testingred)
+p3
+```
+This prediction differs from the one using the mapping model in the sample(s) number `r which((p3==p1)==F)`
+
+## Evaluation & Conclusions
+1. The mapping model yields 100% out-of-sample accuracy but wouldn't be able to generalise for new measurements i.e. new *num_window* values. However, given that the testing data is a sample of the same input data, we will use this model to make the predictions for the project assignment submission. 
+2. The Random Forest model (2), trained with the PCs from the PCA on the train data yields a very high out-of-sample accuracy level of 97%, and is able to generalise. We would use this model with brand new input data. 
+3. The Random Forest model (3), trained with the selected variables using PC variable relevance analysis  yields also a very high out-of-sample accuracy level of 95%, and, like model (2) is able to generalise. Given that the variables are direct measures from sensors, this model would allow us to understand better how the variable *classe* depends on the movement of the user during the workout.  
+
