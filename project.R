@@ -13,14 +13,14 @@ table(train$num_window,train$classe) shows noise-free relationship
 '
 
 '1) Use dictionary num_window --> classe (, as testing data seem to be a sample of overall data and classe is the same for the same num_window)'
-predictions=rep(factor(c("A","B","C","D","E")),dim(testing)[1]%/%5)
+predictions<-rep(factor(c("A","B","C","D","E")),dim(testing)[1]%/%5)
 for (i in 1:dim(testing)[1])
 {
   predictions[i]<-train$classe[which(train$num_window==testing$num_window[i])[1]]
 }
 predictions
 
-'2) Use FR model with only num_window as predictor'
+'2) Use RF model with only num_window as predictor'
 modFit<-train(classe ~ num_window,method="rf",data=train)
 modFit$finalModel
 confusionMatrix(predict(modFit,newdata=test),test$classe)
